@@ -1,11 +1,63 @@
 import { useState, useEffect, useCallback } from "react";
 import { LineChart, Line, AreaChart, Area, BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, PieChart, Pie, Cell, RadarChart, Radar, PolarGrid, PolarAngleAxis, PolarRadiusAxis } from "recharts";
 
-// âââ CONFIG ââââââââââââââââââââââââââââââââââââââââââââââââââââââââââ
+// ─── CONFIG ──────────────────────────────────────────────────────────
 const VAULT_ADDRESSES = {
   ecACRED: "0x75e2DAbcfb2edb0e63445ac9F027e3048508eA2b",
   ecVBILL: "0x2ff596321782fe034102f55af5ad707a4fb1DCe7",
   ecSTAC: "0x8b2d7534ffcf6c2a9226f439cdac26c6666e97a9",
+};
+
+// ─── COMPREHENSIVE RWA VAULT REGISTRY ─────────────────────────────
+const RWA_VAULTS = [
+  { name: "Apollo ACRED", address: "0x716bF454066a84F39A2F78b5707e79a9d64f1225", role: "Credit Fund Collateral", asset: "ACRED" },
+  { name: "BlackRock sBUIDL", address: "0xD8b27CF359b7D15710a5BE299AF6e7Bf904984C2", role: "Treasury Collateral", asset: "sBUIDL" },
+  { name: "Ondo USDY/OUSG", address: "0xEA79E49A076a75A9bF6013505C2B92eED69E4fe1", role: "Treasury/Cash Yield", asset: "USDY/OUSG" },
+  { name: "Sentora Equities", address: "0xf6e2efdf175e7a91c8847dade42f2d39a9ae57d4", role: "Tokenized Equities", asset: "SPYon/TSLAon" },
+  { name: "KPK Select", address: "0x35400a05369e8654f2c166a09fed4db5bb0a4316", role: "Institutional Market Hub", asset: "Multi-Asset" },
+];
+
+// ─── DUNE SQL QUERIES ────────────────────────────────────────────
+const DUNE_QUERIES = {
+  revenuePipeline: `/* Euler V2: Universal RWA & TradFi Activity Monitor */
+WITH rwa_vaults AS (
+    SELECT address, label FROM (VALUES
+        (0x716bF454066a84F39A2F78b5707e79a9d64f1225, 'Apollo ACRED'),
+        (0xD8b27CF359b7D15710a5BE299AF6e7Bf904984C2, 'BlackRock sBUIDL'),
+        (0xEA79E49A076a75A9bF6013505C2B92eED69E4fe1, 'Ondo RWA'),
+        (0xf6e2efdf175e7a91c8847dade42f2d39a9ae57d4, 'Sentora Equities')
+    ) as t(address, label)
+)
+SELECT
+    date_trunc('day', i.evt_block_time) as day,
+    v.label as vault_name,
+    sum(i.amount / 1e6) as usd_value_accrued,
+    count(DISTINCT i.evt_tx_hash) as tx_count
+FROM euler_v2_ethereum.EVault_evt_InterestCollected i
+JOIN rwa_vaults v ON i.contract_address = v.address
+WHERE i.evt_block_time >= now() - interval '180 days'
+GROUP BY 1, 2
+ORDER BY 1 DESC, 3 DESC;`,
+
+  whaleActivity: `/* Tracking Large Institutional Moves in RWA Vaults */
+SELECT
+    evt_block_time,
+    CASE
+        WHEN contract_address = 0x716bF454066a84F39A2F78b5707e79a9d64f1225 THEN 'Apollo'
+        WHEN contract_address = 0xD8b27CF359b7D15710a5BE299AF6e7Bf904984C2 THEN 'BlackRock'
+        ELSE 'Other TradFi'
+    END as partner,
+    "owner" as participant_wallet,
+    "assets" / 1e6 as amount_usd,
+    evt_tx_hash
+FROM euler_v2_ethereum.EVault_evt_Deposit
+WHERE contract_address IN (
+    0x716bF454066a84F39A2F78b5707e79a9d64f1225,
+    0xD8b27CF359b7D15710a5BE299AF6e7Bf904984C2,
+    0xEA79E49A076a75A9bF6013505C2B92eED69E4fe1
+)
+AND "assets" > 100000000000 -- Filters for moves > $100k (adjust as needed)
+ORDER BY evt_block_time DESC;`
 };
 const EUL_TOKEN = "0xd9fcd98c322942075a5c3860693e9f4f03aae07b";
 const DAO_TREASURY = "0xcAD001c30E96765aC90307669d578219D4fb1DCe";
@@ -29,18 +81,20 @@ const COLORS = {
 };
 
 const SECTIONS = [
-  { id: "overview", label: "Overview", icon: "â" },
-  { id: "securitize", label: "Securitize Vaults", icon: "ð¦" },
-  { id: "protocol", label: "Protocol Health", icon: "ð" },
-  { id: "token", label: "EUL Analytics", icon: "ðª" },
-  { id: "derivatives", label: "Derivatives", icon: "ð" },
-  { id: "comparative", label: "Peer Comparison", icon: "âï¸" },
-  { id: "macro", label: "Macro Signals", icon: "ð" },
-  { id: "alerts", label: "Alerts", icon: "ð" },
-  { id: "thesis", label: "Thesis Tracker", icon: "ð¯" },
+  { id: "overview", label: "Overview", icon: "◉" },
+  { id: "securitize", label: "Securitize Vaults", icon: "🏦" },
+  { id: "dune-revenue", label: "Revenue Pipeline", icon: "💰" },
+  { id: "dune-whales", label: "Whale Activity", icon: "🐋" },
+  { id: "protocol", label: "Protocol Health", icon: "💊" },
+  { id: "token", label: "EUL Analytics", icon: "🪙" },
+  { id: "derivatives", label: "Derivatives", icon: "📊" },
+  { id: "comparative", label: "Peer Comparison", icon: "⚖️" },
+  { id: "macro", label: "Macro Signals", icon: "🌐" },
+  { id: "alerts", label: "Alerts", icon: "🔔" },
+  { id: "thesis", label: "Thesis Tracker", icon: "🎯" },
 ];
 
-// âââ MOCK DATA GENERATORS ââââââââââââââââââââââââââââââââââââââââââââ
+// ─── MOCK DATA GENERATORS ────────────────────────────────────────────
 const generateTimeSeries = (days, baseValue, volatility, trend = 0) => {
   const data = [];
   let value = baseValue;
@@ -97,6 +151,47 @@ const MOCK_ALERTS = [
   { id: 5, type: "info", title: "Delegation Spike", message: "320K votes delegated to new delegate address", time: "3d ago", active: false },
 ];
 
+// ─── DUNE MONITOR MOCK DATA ─────────────────────────────────────
+const MOCK_REVENUE_PIPELINE = [
+  { day: "Feb 25", vault: "Apollo ACRED", revenue: 18420, txCount: 12 },
+  { day: "Feb 25", vault: "BlackRock sBUIDL", revenue: 12850, txCount: 8 },
+  { day: "Feb 25", vault: "Ondo RWA", revenue: 8230, txCount: 5 },
+  { day: "Feb 25", vault: "Sentora Equities", revenue: 4150, txCount: 3 },
+  { day: "Feb 26", vault: "Apollo ACRED", revenue: 19100, txCount: 14 },
+  { day: "Feb 26", vault: "BlackRock sBUIDL", revenue: 13400, txCount: 9 },
+  { day: "Feb 26", vault: "Ondo RWA", revenue: 9100, txCount: 7 },
+  { day: "Feb 26", vault: "Sentora Equities", revenue: 3800, txCount: 2 },
+  { day: "Feb 27", vault: "Apollo ACRED", revenue: 21300, txCount: 16 },
+  { day: "Feb 27", vault: "BlackRock sBUIDL", revenue: 14200, txCount: 10 },
+  { day: "Feb 27", vault: "Ondo RWA", revenue: 7800, txCount: 6 },
+  { day: "Feb 27", vault: "Sentora Equities", revenue: 5200, txCount: 4 },
+  { day: "Feb 28", vault: "Apollo ACRED", revenue: 22500, txCount: 18 },
+  { day: "Feb 28", vault: "BlackRock sBUIDL", revenue: 15800, txCount: 11 },
+  { day: "Feb 28", vault: "Ondo RWA", revenue: 10200, txCount: 8 },
+  { day: "Feb 28", vault: "Sentora Equities", revenue: 4800, txCount: 3 },
+  { day: "Mar 1", vault: "Apollo ACRED", revenue: 24100, txCount: 20 },
+  { day: "Mar 1", vault: "BlackRock sBUIDL", revenue: 16500, txCount: 12 },
+  { day: "Mar 1", vault: "Ondo RWA", revenue: 11500, txCount: 9 },
+  { day: "Mar 1", vault: "Sentora Equities", revenue: 5600, txCount: 5 },
+  { day: "Mar 2", vault: "Apollo ACRED", revenue: 23400, txCount: 19 },
+  { day: "Mar 2", vault: "BlackRock sBUIDL", revenue: 17200, txCount: 13 },
+  { day: "Mar 2", vault: "Ondo RWA", revenue: 12100, txCount: 10 },
+  { day: "Mar 2", vault: "Sentora Equities", revenue: 6100, txCount: 6 },
+];
+
+const MOCK_WHALE_DEPOSITS = [
+  { day: "Feb 20", vault: "Apollo ACRED", depositor: "0x8a3f...b2c1", amount: 2500000, cumTotal: 4200000, tier: "Mega Whale", vaults: 2 },
+  { day: "Feb 22", vault: "BlackRock sBUIDL", depositor: "0x3d7e...f890", amount: 1200000, cumTotal: 3100000, tier: "Mega Whale", vaults: 3 },
+  { day: "Feb 24", vault: "Apollo ACRED", depositor: "0xc4a2...1d5e", amount: 750000, cumTotal: 750000, tier: "Whale", vaults: 1 },
+  { day: "Feb 25", vault: "Ondo RWA", depositor: "0x8a3f...b2c1", amount: 500000, cumTotal: 4700000, tier: "Mega Whale", vaults: 3 },
+  { day: "Feb 26", vault: "Sentora Equities", depositor: "0x91b4...e3f2", amount: 380000, cumTotal: 820000, tier: "Whale", vaults: 2 },
+  { day: "Feb 27", vault: "BlackRock sBUIDL", depositor: "0x5f6d...a7c3", amount: 250000, cumTotal: 250000, tier: "Large Depositor", vaults: 1 },
+  { day: "Feb 28", vault: "Apollo ACRED", depositor: "0x3d7e...f890", amount: 1800000, cumTotal: 4900000, tier: "Mega Whale", vaults: 3 },
+  { day: "Mar 1", vault: "KPK Select", depositor: "0xe2c8...9a4d", amount: 600000, cumTotal: 1400000, tier: "Mega Whale", vaults: 2 },
+  { day: "Mar 1", vault: "Apollo ACRED", depositor: "0x7b1a...d6e5", amount: 320000, cumTotal: 320000, tier: "Large Depositor", vaults: 1 },
+  { day: "Mar 2", vault: "BlackRock sBUIDL", depositor: "0x8a3f...b2c1", amount: 900000, cumTotal: 5600000, tier: "Mega Whale", vaults: 4 },
+];
+
 const MOCK_THESIS = [
   { id: 1, text: "KPK reserve fee proposal passes DAO vote", done: false, category: "governance" },
   { id: 2, text: "First >$1M deposit in ecACRED vault", done: false, category: "adoption" },
@@ -117,7 +212,7 @@ const PEER_DATA = [
   { name: "Spark", mcap: 0, fdv: 0, tvl: 4800, revenue30d: 8.2, rwaTvl: 200, mcTvl: 0, revMultiple: 0 },
 ];
 
-// âââ UTILITY COMPONENTS ââââââââââââââââââââââââââââââââââââââââââââââ
+// ─── UTILITY COMPONENTS ──────────────────────────────────────────────
 const fmt = (n, decimals = 2) => {
   if (n >= 1e9) return `$${(n / 1e9).toFixed(decimals)}B`;
   if (n >= 1e6) return `$${(n / 1e6).toFixed(decimals)}M`;
@@ -166,7 +261,7 @@ const StatCard = ({ label, value, sub, change, color = COLORS.primary, icon }) =
         {icon && <span style={{ fontSize: 20 }}>{icon}</span>}
         {change !== undefined && (
           <span style={{ color: change >= 0 ? COLORS.green : COLORS.red, fontSize: 13, fontWeight: 600 }}>
-            {change >= 0 ? "â²" : "â¼"} {Math.abs(change).toFixed(2)}%
+            {change >= 0 ? "▲" : "▼"} {Math.abs(change).toFixed(2)}%
           </span>
         )}
       </div>
@@ -211,7 +306,7 @@ const LoadingPulse = () => (
   </div>
 );
 
-// âââ MAIN DASHBOARD ââââââââââââââââââââââââââââââââââââââââââââââââââ
+// ─── MAIN DASHBOARD ──────────────────────────────────────────────────
 export default function EULDashboard() {
   const [activeSection, setActiveSection] = useState("overview");
   const [liveData, setLiveData] = useState({ price: null, tvl: null, tvlHistory: [], marketData: null, loading: true });
@@ -297,7 +392,7 @@ export default function EULDashboard() {
   const oiMock = generateTimeSeries(30, 25, 3, 0.3);
   const rwaMarketMock = generateTimeSeries(90, 12, 0.8, 0.15);
 
-  // âââ RENDER SECTIONS ââââââââââââââââââââââââââââââââââââââââââââ
+  // ─── RENDER SECTIONS ────────────────────────────────────────────
   const renderOverview = () => {
     const p = liveData.price;
     return (
@@ -305,17 +400,17 @@ export default function EULDashboard() {
         <SectionHeader title="EUL Protocol Overview" subtitle="Real-time metrics powered by CoinGecko & DefiLlama" />
         {liveData.loading && <LoadingPulse />}
         <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(200px, 1fr))", gap: 16, marginBottom: 24 }}>
-          <StatCard label="EUL Price" value={p ? `$${p.usd?.toFixed(4)}` : "â"} change={p?.change24h} icon="ðª" sub={p ? `ATH: $${p.ath?.toFixed(2)} (${p.athChange?.toFixed(0)}%)` : ""} />
-          <StatCard label="Market Cap" value={p?.mcap ? fmt(p.mcap, 1) : "â"} change={p?.change7d} icon="ð" sub="7d change" />
-          <StatCard label="FDV" value={p?.fdv ? fmt(p.fdv, 1) : "â"} icon="ð" sub={p?.totalSupply ? `Supply: ${fmtNum(p.totalSupply)}` : ""} />
-          <StatCard label="Protocol TVL" value={liveData.tvl ? fmt(liveData.tvl, 1) : "â"} icon="ð¦" sub="All chains" />
-          <StatCard label="24h Volume" value={p?.volume24h ? fmt(p.volume24h, 1) : "â"} icon="ð" />
-          <StatCard label="MC/TVL Ratio" value={p?.mcap && liveData.tvl ? (p.mcap / liveData.tvl).toFixed(3) : "â"} icon="âï¸" sub="Lower = undervalued" />
+          <StatCard label="EUL Price" value={p ? `$${p.usd?.toFixed(4)}` : "—"} change={p?.change24h} icon="🪙" sub={p ? `ATH: $${p.ath?.toFixed(2)} (${p.athChange?.toFixed(0)}%)` : ""} />
+          <StatCard label="Market Cap" value={p?.mcap ? fmt(p.mcap, 1) : "—"} change={p?.change7d} icon="📈" sub="7d change" />
+          <StatCard label="FDV" value={p?.fdv ? fmt(p.fdv, 1) : "—"} icon="💎" sub={p?.totalSupply ? `Supply: ${fmtNum(p.totalSupply)}` : ""} />
+          <StatCard label="Protocol TVL" value={liveData.tvl ? fmt(liveData.tvl, 1) : "—"} icon="🏦" sub="All chains" />
+          <StatCard label="24h Volume" value={p?.volume24h ? fmt(p.volume24h, 1) : "—"} icon="📊" />
+          <StatCard label="MC/TVL Ratio" value={p?.mcap && liveData.tvl ? (p.mcap / liveData.tvl).toFixed(3) : "—"} icon="⚖️" sub="Lower = undervalued" />
         </div>
 
         {/* TVL Chart */}
         <Card style={{ marginBottom: 24 }}>
-          <h3 style={{ color: COLORS.text, margin: "0 0 16px", fontSize: 16 }}>TVL History (90d) â Live from DefiLlama</h3>
+          <h3 style={{ color: COLORS.text, margin: "0 0 16px", fontSize: 16 }}>TVL History (90d) — Live from DefiLlama</h3>
           <ResponsiveContainer width="100%" height={280}>
             <AreaChart data={liveData.tvlHistory.length > 0 ? liveData.tvlHistory : tvlMock}>
               <defs>
@@ -336,7 +431,7 @@ export default function EULDashboard() {
         {/* Chain TVL Breakdown */}
         {liveData.chainTvl && liveData.chainTvl.length > 0 && (
           <Card style={{ marginBottom: 24 }}>
-            <h3 style={{ color: COLORS.text, margin: "0 0 16px", fontSize: 16 }}>TVL by Chain â Live</h3>
+            <h3 style={{ color: COLORS.text, margin: "0 0 16px", fontSize: 16 }}>TVL by Chain — Live</h3>
             <div style={{ display: "flex", gap: 32, flexWrap: "wrap" }}>
               <div style={{ flex: 1, minWidth: 250 }}>
                 <ResponsiveContainer width="100%" height={220}>
@@ -382,7 +477,7 @@ export default function EULDashboard() {
 
   const renderSecuritize = () => (
     <div>
-      <SectionHeader title="Securitize / RWA Vault Monitoring" subtitle="Ethereum L1 â ERC-4626 vault metrics" />
+      <SectionHeader title="Securitize / RWA Vault Monitoring" subtitle="Ethereum L1 — ERC-4626 vault metrics" />
       <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(300px, 1fr))", gap: 16, marginBottom: 24 }}>
         {Object.entries(MOCK_VAULT_DATA).map(([name, data]) => (
           <Card key={name}>
@@ -448,10 +543,10 @@ export default function EULDashboard() {
       <Card>
         <h3 style={{ color: COLORS.text, margin: "0 0 8px", fontSize: 16 }}>Data Sources</h3>
         <div style={{ color: COLORS.textMuted, fontSize: 13, lineHeight: 1.8 }}>
-          <div>â¢ Etherscan: ERC-4626 <code style={{ color: COLORS.accent }}>totalAssets()</code>, <code style={{ color: COLORS.accent }}>totalSupply()</code></div>
-          <div>â¢ DefiLlama API: TVL aggregation</div>
-          <div>â¢ Euler subgraph: vault utilization, borrow/supply rates</div>
-          <div>â¢ Securitize DS token contract: transfer event tracking</div>
+          <div>• Etherscan: ERC-4626 <code style={{ color: COLORS.accent }}>totalAssets()</code>, <code style={{ color: COLORS.accent }}>totalSupply()</code></div>
+          <div>• DefiLlama API: TVL aggregation</div>
+          <div>• Euler subgraph: vault utilization, borrow/supply rates</div>
+          <div>• Securitize DS token contract: transfer event tracking</div>
         </div>
       </Card>
     </div>
@@ -461,12 +556,12 @@ export default function EULDashboard() {
     <div>
       <SectionHeader title="Protocol-Wide Health Metrics" subtitle="TVL, revenue, and risk monitoring across all chains" />
       <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))", gap: 16, marginBottom: 24 }}>
-        <StatCard label="Aggregate TVL" value={liveData.tvl ? fmt(liveData.tvl) : "â"} icon="ð¦" change={3.2} sub="All chains" />
-        <StatCard label="Daily Revenue" value="$75.7K" icon="ð°" change={8.5} sub="Protocol fees" />
-        <StatCard label="Q1 2025 Fees" value="$4.39M" icon="ð" />
-        <StatCard label="Active Vaults" value="142" icon="ð" change={5.1} sub="EVK deployments" />
-        <StatCard label="EulerSwap Peak" value="$1.8B" icon="ð" sub="July 2025 volume" />
-        <StatCard label="Bad Debt Events" value="1" icon="â ï¸" sub="Stream Finance" color={COLORS.orange} />
+        <StatCard label="Aggregate TVL" value={liveData.tvl ? fmt(liveData.tvl) : "—"} icon="🏦" change={3.2} sub="All chains" />
+        <StatCard label="Daily Revenue" value="$75.7K" icon="💰" change={8.5} sub="Protocol fees" />
+        <StatCard label="Q1 2025 Fees" value="$4.39M" icon="📈" />
+        <StatCard label="Active Vaults" value="142" icon="🔐" change={5.1} sub="EVK deployments" />
+        <StatCard label="EulerSwap Peak" value="$1.8B" icon="🔄" sub="July 2025 volume" />
+        <StatCard label="Bad Debt Events" value="1" icon="⚠️" sub="Stream Finance" color={COLORS.orange} />
       </div>
 
       <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16, marginBottom: 24 }}>
@@ -503,7 +598,7 @@ export default function EULDashboard() {
       </div>
 
       <Card>
-        <h3 style={{ color: COLORS.text, margin: "0 0 16px", fontSize: 16 }}>Risk Curators â TVL Distribution</h3>
+        <h3 style={{ color: COLORS.text, margin: "0 0 16px", fontSize: 16 }}>Risk Curators — TVL Distribution</h3>
         <ResponsiveContainer width="100%" height={220}>
           <BarChart
             layout="vertical"
@@ -532,10 +627,10 @@ export default function EULDashboard() {
       <div>
         <SectionHeader title="EUL Token On-Chain Analytics" subtitle="Accumulation signals, exchange flows, and governance activity" />
         <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))", gap: 16, marginBottom: 24 }}>
-          <StatCard label="Price" value={p ? `$${p.usd?.toFixed(4)}` : "â"} change={p?.change24h} />
-          <StatCard label="Circulating" value={p?.circulatingSupply ? fmtNum(p.circulatingSupply) : "â"} sub="EUL tokens" />
-          <StatCard label="Total Supply" value={p?.totalSupply ? fmtNum(p.totalSupply) : "â"} sub="2.718% max annual inflation" />
-          <StatCard label="DAO Treasury" value="~27%" sub="of total supply" icon="ðï¸" />
+          <StatCard label="Price" value={p ? `$${p.usd?.toFixed(4)}` : "—"} change={p?.change24h} />
+          <StatCard label="Circulating" value={p?.circulatingSupply ? fmtNum(p.circulatingSupply) : "—"} sub="EUL tokens" />
+          <StatCard label="Total Supply" value={p?.totalSupply ? fmtNum(p.totalSupply) : "—"} sub="2.718% max annual inflation" />
+          <StatCard label="DAO Treasury" value="~27%" sub="of total supply" icon="🏛️" />
         </div>
 
         <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16, marginBottom: 24 }}>
@@ -551,7 +646,7 @@ export default function EULDashboard() {
                   <div style={{ display: "flex", gap: 16, alignItems: "center" }}>
                     <span style={{ color: COLORS.red, fontSize: 12 }}>In: {fmtNum(ex.inflow)}</span>
                     <span style={{ color: COLORS.green, fontSize: 12 }}>Out: {fmtNum(ex.outflow)}</span>
-                    <Badge color={isOutflow ? COLORS.green : COLORS.red}>{isOutflow ? "â" : "+"}{fmtNum(Math.abs(net))} net</Badge>
+                    <Badge color={isOutflow ? COLORS.green : COLORS.red}>{isOutflow ? "−" : "+"}{fmtNum(Math.abs(net))} net</Badge>
                   </div>
                 </div>
               );
@@ -569,7 +664,7 @@ export default function EULDashboard() {
             <h3 style={{ color: COLORS.text, margin: "0 0 16px", fontSize: 16 }}>Top Wallet Movements</h3>
             <div style={{ maxHeight: 340, overflowY: "auto" }}>
               <MiniTable
-                headers={["Wallet", "Balance", "7d Î", "30d Î"]}
+                headers={["Wallet", "Balance", "7d Δ", "30d Δ"]}
                 rows={MOCK_WHALE_WALLETS.map((w) => [
                   w.label,
                   fmtNum(w.balance),
@@ -617,12 +712,12 @@ export default function EULDashboard() {
       <div>
         <SectionHeader title="Derivatives & Market Microstructure" subtitle="Perpetual futures, order book depth, and signal interpretation" />
         <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))", gap: 16, marginBottom: 24 }}>
-          <StatCard label="Open Interest" value={fmt(d.openInterest)} change={d.oiChange24h} icon="ð" />
-          <StatCard label="Funding Rate" value={`${d.fundingRate}%`} icon="ð¹" sub={d.fundingRate < 0 ? "Shorts paying â squeeze setup" : "Longs paying"} color={d.fundingRate < 0 ? COLORS.red : COLORS.green} />
-          <StatCard label="Long/Short Ratio" value={d.longShortRatio.toFixed(2)} icon="âï¸" sub={d.longShortRatio < 1 ? "More shorts than longs" : "More longs"} />
-          <StatCard label="Basis (Perp vs Spot)" value={`${d.basis}%`} icon="ð" sub={d.basis < 0 ? "Perp discount = bearish" : "Perp premium = bullish"} />
-          <StatCard label="24h Liquidations" value={fmt(d.liquidation24h)} icon="ð¥" />
-          <StatCard label="OI/MCap Ratio" value={liveData.price?.mcap ? `${((d.openInterest / liveData.price.mcap) * 100).toFixed(1)}%` : "â"} icon="â¡" sub="High = leveraged" />
+          <StatCard label="Open Interest" value={fmt(d.openInterest)} change={d.oiChange24h} icon="📈" />
+          <StatCard label="Funding Rate" value={`${d.fundingRate}%`} icon="💹" sub={d.fundingRate < 0 ? "Shorts paying — squeeze setup" : "Longs paying"} color={d.fundingRate < 0 ? COLORS.red : COLORS.green} />
+          <StatCard label="Long/Short Ratio" value={d.longShortRatio.toFixed(2)} icon="⚔️" sub={d.longShortRatio < 1 ? "More shorts than longs" : "More longs"} />
+          <StatCard label="Basis (Perp vs Spot)" value={`${d.basis}%`} icon="📐" sub={d.basis < 0 ? "Perp discount = bearish" : "Perp premium = bullish"} />
+          <StatCard label="24h Liquidations" value={fmt(d.liquidation24h)} icon="💥" />
+          <StatCard label="OI/MCap Ratio" value={liveData.price?.mcap ? `${((d.openInterest / liveData.price.mcap) * 100).toFixed(1)}%` : "—"} icon="⚡" sub="High = leveraged" />
         </div>
 
         <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16, marginBottom: 24 }}>
@@ -673,7 +768,7 @@ export default function EULDashboard() {
                 <div style={{ color: COLORS.textMuted, fontSize: 12 }}>{s.interpretation}</div>
               </div>
               <Badge color={s.status === "active" ? COLORS.green : s.status === "warning" ? COLORS.orange : COLORS.textDim}>
-                {s.status === "active" ? "â Active" : s.status === "warning" ? "â Forming" : "â Inactive"}
+                {s.status === "active" ? "● Active" : s.status === "warning" ? "◐ Forming" : "○ Inactive"}
               </Badge>
             </div>
           ))}
@@ -684,7 +779,7 @@ export default function EULDashboard() {
 
   const renderComparative = () => (
     <div>
-      <SectionHeader title="Comparative / Relative Value" subtitle="Peer protocol benchmarks â Euler vs Morpho vs Aave vs Spark" />
+      <SectionHeader title="Comparative / Relative Value" subtitle="Peer protocol benchmarks — Euler vs Morpho vs Aave vs Spark" />
       <Card style={{ marginBottom: 24 }}>
         <h3 style={{ color: COLORS.text, margin: "0 0 16px", fontSize: 16 }}>Protocol Comparison Table</h3>
         <MiniTable
@@ -732,9 +827,9 @@ export default function EULDashboard() {
       <Card>
         <h3 style={{ color: COLORS.text, margin: "0 0 16px", fontSize: 16 }}>Key Valuation Ratios</h3>
         <div style={{ color: COLORS.textMuted, fontSize: 13, lineHeight: 1.8 }}>
-          <p style={{ margin: "0 0 8px" }}><strong style={{ color: COLORS.text }}>MC/TVL</strong> â Euler's ratio ({PEER_DATA[0].mcTvl.toFixed(3)}) is comparable to Morpho ({PEER_DATA[1].mcTvl.toFixed(3)}). Convergence upward would signal institutional re-rating.</p>
-          <p style={{ margin: "0 0 8px" }}><strong style={{ color: COLORS.text }}>Revenue Multiple</strong> â Euler at {PEER_DATA[0].revMultiple.toFixed(1)}x vs Aave at {PEER_DATA[2].revMultiple.toFixed(1)}x. Lower multiple = cheaper relative to revenue.</p>
-          <p style={{ margin: 0 }}><strong style={{ color: COLORS.text }}>RWA TVL Share</strong> â Euler at {((PEER_DATA[0].rwaTvl / PEER_DATA[0].tvl) * 100).toFixed(1)}% of TVL in RWA. Growth here is the primary thesis driver.</p>
+          <p style={{ margin: "0 0 8px" }}><strong style={{ color: COLORS.text }}>MC/TVL</strong> — Euler's ratio ({PEER_DATA[0].mcTvl.toFixed(3)}) is comparable to Morpho ({PEER_DATA[1].mcTvl.toFixed(3)}). Convergence upward would signal institutional re-rating.</p>
+          <p style={{ margin: "0 0 8px" }}><strong style={{ color: COLORS.text }}>Revenue Multiple</strong> — Euler at {PEER_DATA[0].revMultiple.toFixed(1)}x vs Aave at {PEER_DATA[2].revMultiple.toFixed(1)}x. Lower multiple = cheaper relative to revenue.</p>
+          <p style={{ margin: 0 }}><strong style={{ color: COLORS.text }}>RWA TVL Share</strong> — Euler at {((PEER_DATA[0].rwaTvl / PEER_DATA[0].tvl) * 100).toFixed(1)}% of TVL in RWA. Growth here is the primary thesis driver.</p>
         </div>
       </Card>
     </div>
@@ -744,10 +839,10 @@ export default function EULDashboard() {
     <div>
       <SectionHeader title="Macro & Contextual Signals" subtitle="RWA market growth, governance calendar, and sentiment" />
       <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(200px, 1fr))", gap: 16, marginBottom: 24 }}>
-        <StatCard label="Total RWA Market" value="$18.2B" icon="ð" change={15.3} sub="RWA.xyz aggregate" />
-        <StatCard label="ACRED AUM" value="$1.2B" icon="ðï¸" change={8.7} sub="Apollo tokenized credit" />
-        <StatCard label="sBUIDL AUM" value="$2.1B" icon="ð¦" change={22.1} sub="BlackRock treasury fund" />
-        <StatCard label="Securitize Platform" value="$4.2B+" icon="ð" change={5.0} sub="Total AUM" />
+        <StatCard label="Total RWA Market" value="$18.2B" icon="🌐" change={15.3} sub="RWA.xyz aggregate" />
+        <StatCard label="ACRED AUM" value="$1.2B" icon="🏛️" change={8.7} sub="Apollo tokenized credit" />
+        <StatCard label="sBUIDL AUM" value="$2.1B" icon="🏦" change={22.1} sub="BlackRock treasury fund" />
+        <StatCard label="Securitize Platform" value="$4.2B+" icon="🔐" change={5.0} sub="Total AUM" />
       </div>
 
       <Card style={{ marginBottom: 24 }}>
@@ -790,16 +885,16 @@ export default function EULDashboard() {
         <Card>
           <h3 style={{ color: COLORS.text, margin: "0 0 16px", fontSize: 16 }}>Sentiment & Social</h3>
           {[
-            { metric: "CT Social Volume", value: "Medium", trend: "â", color: COLORS.accent },
-            { metric: "Forum Engagement", value: "High", trend: "â", color: COLORS.green },
-            { metric: "Research Coverage", value: "Growing", trend: "â", color: COLORS.primary },
-            { metric: "Discord Activity", value: "Moderate", trend: "â", color: COLORS.orange },
+            { metric: "CT Social Volume", value: "Medium", trend: "↑", color: COLORS.accent },
+            { metric: "Forum Engagement", value: "High", trend: "↑", color: COLORS.green },
+            { metric: "Research Coverage", value: "Growing", trend: "↑", color: COLORS.primary },
+            { metric: "Discord Activity", value: "Moderate", trend: "→", color: COLORS.orange },
           ].map((item) => (
             <div key={item.metric} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "10px 0", borderBottom: `1px solid ${COLORS.border}20` }}>
               <span style={{ color: COLORS.text, fontSize: 14 }}>{item.metric}</span>
               <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
                 <Badge color={item.color}>{item.value}</Badge>
-                <span style={{ color: item.trend === "â" ? COLORS.green : COLORS.textDim, fontSize: 16 }}>{item.trend}</span>
+                <span style={{ color: item.trend === "↑" ? COLORS.green : COLORS.textDim, fontSize: 16 }}>{item.trend}</span>
               </div>
             </div>
           ))}
@@ -881,7 +976,7 @@ export default function EULDashboard() {
             <div>
               <h3 style={{ color: COLORS.text, margin: "0 0 4px", fontSize: 20 }}>Thesis Completion</h3>
               <p style={{ color: COLORS.textMuted, margin: 0, fontSize: 13 }}>
-                {completed === 0 ? "No milestones achieved yet â early stage thesis" : completed < 4 ? "Early signals forming â monitoring closely" : completed < 7 ? "Thesis gaining traction â key milestones hit" : "Strong thesis confirmation â most milestones achieved"}
+                {completed === 0 ? "No milestones achieved yet — early stage thesis" : completed < 4 ? "Early signals forming — monitoring closely" : completed < 7 ? "Thesis gaining traction — key milestones hit" : "Strong thesis confirmation — most milestones achieved"}
               </p>
             </div>
           </div>
@@ -915,7 +1010,7 @@ export default function EULDashboard() {
                   transition: "all 0.2s",
                 }}
               >
-                {item.done && <span style={{ color: "#fff", fontSize: 14, fontWeight: 700 }}>â</span>}
+                {item.done && <span style={{ color: "#fff", fontSize: 14, fontWeight: 700 }}>✓</span>}
               </div>
               <span style={{ color: item.done ? COLORS.textMuted : COLORS.text, fontSize: 14, textDecoration: item.done ? "line-through" : "none", flex: 1 }}>{item.text}</span>
               <Badge color={categories[item.category]}>{item.category}</Badge>
@@ -947,10 +1042,242 @@ export default function EULDashboard() {
     );
   };
 
+  // ─── DUNE MONITOR: REVENUE PIPELINE ──────────────────────────────
+  const renderDuneRevenue = () => {
+    // Aggregate revenue by day for stacked chart
+    const dailyRevenue = {};
+    MOCK_REVENUE_PIPELINE.forEach(d => {
+      if (!dailyRevenue[d.day]) dailyRevenue[d.day] = { day: d.day };
+      dailyRevenue[d.day][d.vault] = d.revenue;
+      dailyRevenue[d.day].total = (dailyRevenue[d.day].total || 0) + d.revenue;
+    });
+    const revenueChartData = Object.values(dailyRevenue);
+
+    // Summary stats
+    const totalRevenue = MOCK_REVENUE_PIPELINE.reduce((s, d) => s + d.revenue, 0);
+    const totalTxs = MOCK_REVENUE_PIPELINE.reduce((s, d) => s + d.txCount, 0);
+    const vaultTotals = {};
+    MOCK_REVENUE_PIPELINE.forEach(d => {
+      vaultTotals[d.vault] = (vaultTotals[d.vault] || 0) + d.revenue;
+    });
+
+    const vaultColors = {
+      "Apollo ACRED": COLORS.primary,
+      "BlackRock sBUIDL": COLORS.accent,
+      "Ondo RWA": COLORS.green,
+      "Sentora Equities": COLORS.orange,
+    };
+
+    return (
+      <div>
+        <SectionHeader title="Dune Monitor #1: Revenue Pipeline" subtitle="Euler V2 Universal RWA & TradFi Activity — Interest collected from institutional vaults" />
+        <Badge color={COLORS.orange}>DUNE SQL</Badge>
+        <span style={{ color: COLORS.textMuted, fontSize: 11, marginLeft: 8 }}>Mock data — connect Dune API for live results</span>
+
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(200px, 1fr))", gap: 16, margin: "20px 0" }}>
+          <StatCard label="Total Revenue (6d)" value={fmt(totalRevenue)} icon="💰" color={COLORS.green} />
+          <StatCard label="Total Transactions" value={totalTxs.toLocaleString()} icon="📋" color={COLORS.accent} />
+          <StatCard label="Avg Daily Revenue" value={fmt(totalRevenue / 6)} icon="📈" color={COLORS.primary} />
+          <StatCard label="Active Vaults" value="4" icon="🏦" sub="Monitoring revenue" color={COLORS.secondary} />
+        </div>
+
+        {/* Stacked Bar Chart */}
+        <Card style={{ marginBottom: 24 }}>
+          <h3 style={{ color: COLORS.text, margin: "0 0 16px", fontSize: 16 }}>Daily Revenue by Vault</h3>
+          <ResponsiveContainer width="100%" height={300}>
+            <BarChart data={revenueChartData}>
+              <CartesianGrid strokeDasharray="3 3" stroke={COLORS.border} />
+              <XAxis dataKey="day" stroke={COLORS.textDim} tick={{ fontSize: 11 }} />
+              <YAxis stroke={COLORS.textDim} tick={{ fontSize: 11 }} tickFormatter={(v) => `$${(v/1000).toFixed(0)}K`} />
+              <Tooltip contentStyle={{ background: COLORS.card, border: `1px solid ${COLORS.border}`, borderRadius: 8, color: COLORS.text }} formatter={(v) => [`$${v.toLocaleString()}`, ""]} />
+              {Object.keys(vaultColors).map(vault => (
+                <Bar key={vault} dataKey={vault} stackId="revenue" fill={vaultColors[vault]} radius={vault === "Sentora Equities" ? [4, 4, 0, 0] : [0, 0, 0, 0]} />
+              ))}
+            </BarChart>
+          </ResponsiveContainer>
+        </Card>
+
+        {/* Vault Revenue Breakdown */}
+        <Card style={{ marginBottom: 24 }}>
+          <h3 style={{ color: COLORS.text, margin: "0 0 16px", fontSize: 16 }}>Vault Revenue Breakdown</h3>
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16 }}>
+            <div>
+              <ResponsiveContainer width="100%" height={220}>
+                <PieChart>
+                  <Pie data={Object.entries(vaultTotals).map(([name, value]) => ({ name, value }))} dataKey="value" nameKey="name" cx="50%" cy="50%" outerRadius={80} label={({ name, percent }) => `${name.split(" ")[0]} ${(percent * 100).toFixed(0)}%`}>
+                    {Object.keys(vaultTotals).map((vault, i) => (
+                      <Cell key={i} fill={vaultColors[vault] || COLORS.slate} />
+                    ))}
+                  </Pie>
+                  <Tooltip formatter={(v) => fmt(v)} contentStyle={{ background: COLORS.card, border: `1px solid ${COLORS.border}`, borderRadius: 8, color: COLORS.text }} />
+                </PieChart>
+              </ResponsiveContainer>
+            </div>
+            <div>
+              {Object.entries(vaultTotals).sort((a, b) => b[1] - a[1]).map(([vault, total]) => (
+                <div key={vault} style={{ display: "flex", justifyContent: "space-between", padding: "10px 0", borderBottom: `1px solid ${COLORS.border}20` }}>
+                  <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                    <div style={{ width: 10, height: 10, borderRadius: "50%", background: vaultColors[vault] || COLORS.slate }} />
+                    <span style={{ color: COLORS.text, fontSize: 13 }}>{vault}</span>
+                  </div>
+                  <span style={{ color: COLORS.textMuted, fontFamily: "monospace", fontSize: 13 }}>{fmt(total)}</span>
+                </div>
+              ))}
+            </div>
+          </div>
+        </Card>
+
+        {/* SQL Reference */}
+        <Card>
+          <h3 style={{ color: COLORS.text, margin: "0 0 12px", fontSize: 16 }}>Dune SQL Query Reference</h3>
+          <div style={{ background: "#0d1117", borderRadius: 8, padding: 16, overflow: "auto", maxHeight: 300 }}>
+            <pre style={{ color: "#c9d1d9", fontSize: 11, fontFamily: "monospace", margin: 0, whiteSpace: "pre-wrap" }}>{DUNE_QUERIES.revenuePipeline}</pre>
+          </div>
+          <div style={{ marginTop: 12, display: "flex", gap: 8 }}>
+            <Badge color={COLORS.accent}>euler_v2_ethereum.EVault_evt_InterestCollected</Badge>
+            <Badge color={COLORS.green}>180d lookback</Badge>
+          </div>
+        </Card>
+      </div>
+    );
+  };
+
+  // ─── DUNE MONITOR: WHALE / INSTITUTIONAL ACTIVITY ─────────────────
+  const renderDuneWhales = () => {
+    // Stats
+    const totalDeposited = MOCK_WHALE_DEPOSITS.reduce((s, d) => s + d.amount, 0);
+    const uniqueWhales = new Set(MOCK_WHALE_DEPOSITS.map(d => d.depositor)).size;
+    const megaWhales = MOCK_WHALE_DEPOSITS.filter(d => d.tier === "Mega Whale");
+    const megaWhaleDeposited = megaWhales.reduce((s, d) => s + d.amount, 0);
+
+    // Daily volume chart
+    const dailyVolume = {};
+    MOCK_WHALE_DEPOSITS.forEach(d => {
+      if (!dailyVolume[d.day]) dailyVolume[d.day] = { day: d.day };
+      dailyVolume[d.day][d.vault] = (dailyVolume[d.day][d.vault] || 0) + d.amount;
+      dailyVolume[d.day].total = (dailyVolume[d.day].total || 0) + d.amount;
+    });
+    const volumeChartData = Object.values(dailyVolume);
+
+    const vaultColors = {
+      "Apollo ACRED": COLORS.primary,
+      "BlackRock sBUIDL": COLORS.accent,
+      "Ondo RWA": COLORS.green,
+      "Sentora Equities": COLORS.orange,
+      "KPK Select": COLORS.pink,
+    };
+
+    const tierColors = {
+      "Mega Whale": COLORS.pink,
+      "Whale": COLORS.secondary,
+      "Large Depositor": COLORS.accent,
+    };
+
+    return (
+      <div>
+        <SectionHeader title="Dune Monitor #2: Whale & Institutional Activity" subtitle="Tracking large institutional moves (>$100K) in RWA vaults — Apollo, BlackRock & Other TradFi partners" />
+        <Badge color={COLORS.orange}>DUNE SQL</Badge>
+        <span style={{ color: COLORS.textMuted, fontSize: 11, marginLeft: 8 }}>Mock data — connect Dune API for live results</span>
+
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(200px, 1fr))", gap: 16, margin: "20px 0" }}>
+          <StatCard label="Total Whale Deposits" value={fmt(totalDeposited)} icon="🐋" color={COLORS.pink} />
+          <StatCard label="Unique Whales" value={uniqueWhales} icon="👤" color={COLORS.secondary} sub={`${MOCK_WHALE_DEPOSITS.filter(d => d.tier === "Mega Whale").length} Mega Whale txns`} />
+          <StatCard label="Mega Whale Volume" value={fmt(megaWhaleDeposited)} icon="🏛️" color={COLORS.primary} sub={`${((megaWhaleDeposited / totalDeposited) * 100).toFixed(0)}% of total`} />
+          <StatCard label="Avg Deposit Size" value={fmt(totalDeposited / MOCK_WHALE_DEPOSITS.length)} icon="📐" color={COLORS.green} />
+        </div>
+
+        {/* Daily Whale Volume Chart */}
+        <Card style={{ marginBottom: 24 }}>
+          <h3 style={{ color: COLORS.text, margin: "0 0 16px", fontSize: 16 }}>Daily Whale Deposit Volume by Vault</h3>
+          <ResponsiveContainer width="100%" height={300}>
+            <BarChart data={volumeChartData}>
+              <CartesianGrid strokeDasharray="3 3" stroke={COLORS.border} />
+              <XAxis dataKey="day" stroke={COLORS.textDim} tick={{ fontSize: 11 }} />
+              <YAxis stroke={COLORS.textDim} tick={{ fontSize: 11 }} tickFormatter={(v) => `$${(v/1e6).toFixed(1)}M`} />
+              <Tooltip contentStyle={{ background: COLORS.card, border: `1px solid ${COLORS.border}`, borderRadius: 8, color: COLORS.text }} formatter={(v) => [fmt(v), ""]} />
+              {Object.keys(vaultColors).map(vault => (
+                <Bar key={vault} dataKey={vault} stackId="deposits" fill={vaultColors[vault]} radius={[0, 0, 0, 0]} />
+              ))}
+            </BarChart>
+          </ResponsiveContainer>
+        </Card>
+
+        {/* Whale Activity Feed */}
+        <Card style={{ marginBottom: 24 }}>
+          <h3 style={{ color: COLORS.text, margin: "0 0 16px", fontSize: 16 }}>Recent Whale Deposits</h3>
+          <MiniTable
+            headers={["Date", "Vault", "Depositor", "Amount", "Cumulative", "Tier"]}
+            rows={MOCK_WHALE_DEPOSITS.map(d => [
+              d.day,
+              d.vault,
+              d.depositor,
+              fmt(d.amount),
+              fmt(d.cumTotal),
+              <Badge key={d.depositor + d.day} color={tierColors[d.tier] || COLORS.slate}>{d.tier}</Badge>,
+            ])}
+          />
+        </Card>
+
+        {/* Whale Tier Distribution */}
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16, marginBottom: 24 }}>
+          <Card>
+            <h3 style={{ color: COLORS.text, margin: "0 0 16px", fontSize: 16 }}>Whale Tier Distribution</h3>
+            {Object.entries(tierColors).map(([tier, color]) => {
+              const tierData = MOCK_WHALE_DEPOSITS.filter(d => d.tier === tier);
+              const tierTotal = tierData.reduce((s, d) => s + d.amount, 0);
+              const pctOfTotal = totalDeposited > 0 ? (tierTotal / totalDeposited) * 100 : 0;
+              return (
+                <div key={tier} style={{ marginBottom: 16 }}>
+                  <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 6 }}>
+                    <span style={{ color: COLORS.text, fontSize: 13 }}>{tier}</span>
+                    <span style={{ color: COLORS.textMuted, fontFamily: "monospace", fontSize: 12 }}>{fmt(tierTotal)} ({pctOfTotal.toFixed(0)}%)</span>
+                  </div>
+                  <div style={{ height: 8, background: COLORS.border, borderRadius: 4, overflow: "hidden" }}>
+                    <div style={{ width: `${pctOfTotal}%`, height: "100%", background: color, borderRadius: 4 }} />
+                  </div>
+                </div>
+              );
+            })}
+          </Card>
+          <Card>
+            <h3 style={{ color: COLORS.text, margin: "0 0 16px", fontSize: 16 }}>RWA Vault Registry</h3>
+            {RWA_VAULTS.map(v => (
+              <div key={v.address} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "8px 0", borderBottom: `1px solid ${COLORS.border}20` }}>
+                <div>
+                  <div style={{ color: COLORS.text, fontSize: 13, fontWeight: 600 }}>{v.name}</div>
+                  <code style={{ color: COLORS.textDim, fontSize: 10 }}>{v.address.slice(0, 10)}...{v.address.slice(-6)}</code>
+                </div>
+                <div style={{ textAlign: "right" }}>
+                  <Badge color={COLORS.accent}>{v.asset}</Badge>
+                  <div style={{ color: COLORS.textMuted, fontSize: 10, marginTop: 4 }}>{v.role}</div>
+                </div>
+              </div>
+            ))}
+          </Card>
+        </div>
+
+        {/* SQL Reference */}
+        <Card>
+          <h3 style={{ color: COLORS.text, margin: "0 0 12px", fontSize: 16 }}>Dune SQL Query Reference</h3>
+          <div style={{ background: "#0d1117", borderRadius: 8, padding: 16, overflow: "auto", maxHeight: 300 }}>
+            <pre style={{ color: "#c9d1d9", fontSize: 11, fontFamily: "monospace", margin: 0, whiteSpace: "pre-wrap" }}>{DUNE_QUERIES.whaleActivity}</pre>
+          </div>
+          <div style={{ marginTop: 12, display: "flex", gap: 8, flexWrap: "wrap" }}>
+            <Badge color={COLORS.accent}>euler_v2_ethereum.EVault_evt_Deposit</Badge>
+            <Badge color={COLORS.pink}>$100K+ threshold</Badge>
+            <Badge color={COLORS.green}>Apollo / BlackRock / Ondo</Badge>
+          </div>
+        </Card>
+      </div>
+    );
+  };
+
   const renderSection = () => {
     const map = {
       overview: renderOverview,
       securitize: renderSecuritize,
+      "dune-revenue": renderDuneRevenue,
+      "dune-whales": renderDuneWhales,
       protocol: renderProtocol,
       token: renderToken,
       derivatives: renderDerivatives,
@@ -962,7 +1289,7 @@ export default function EULDashboard() {
     return map[activeSection]?.() || null;
   };
 
-  // âââ MAIN RENDER ââââââââââââââââââââââââââââââââââââââââââââââââââ
+  // ─── MAIN RENDER ──────────────────────────────────────────────────
   return (
     <div style={{ background: COLORS.bg, minHeight: "100vh", color: COLORS.text, fontFamily: '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif' }}>
       {/* Header */}
@@ -980,7 +1307,7 @@ export default function EULDashboard() {
             <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "6px 14px", background: `${COLORS.primary}15`, borderRadius: 8, border: `1px solid ${COLORS.primary}30` }}>
               <span style={{ color: COLORS.text, fontSize: 15, fontWeight: 700 }}>EUL ${liveData.price.usd?.toFixed(4)}</span>
               <span style={{ color: liveData.price.change24h >= 0 ? COLORS.green : COLORS.red, fontSize: 12, fontWeight: 600 }}>
-                {liveData.price.change24h >= 0 ? "â²" : "â¼"} {Math.abs(liveData.price.change24h || 0).toFixed(2)}%
+                {liveData.price.change24h >= 0 ? "▲" : "▼"} {Math.abs(liveData.price.change24h || 0).toFixed(2)}%
               </span>
             </div>
           )}
@@ -988,7 +1315,7 @@ export default function EULDashboard() {
             onClick={fetchLiveData}
             style={{ padding: "6px 12px", borderRadius: 8, border: `1px solid ${COLORS.border}`, background: "transparent", color: COLORS.textMuted, fontSize: 12, cursor: "pointer" }}
           >
-            â» Refresh
+            ↻ Refresh
           </button>
           {lastRefresh && <span style={{ color: COLORS.textDim, fontSize: 11 }}>{lastRefresh.toLocaleTimeString()}</span>}
         </div>
@@ -1032,6 +1359,10 @@ export default function EULDashboard() {
               <div style={{ width: 6, height: 6, borderRadius: "50%", background: liveData.tvl ? COLORS.green : COLORS.red }} />
               <span style={{ color: COLORS.textDim, fontSize: 11 }}>DefiLlama</span>
             </div>
+            <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 4 }}>
+              <div style={{ width: 6, height: 6, borderRadius: "50%", background: COLORS.orange }} />
+              <span style={{ color: COLORS.textDim, fontSize: 11 }}>Dune Analytics</span>
+            </div>
             <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
               <div style={{ width: 6, height: 6, borderRadius: "50%", background: COLORS.orange }} />
               <span style={{ color: COLORS.textDim, fontSize: 11 }}>Mock Data</span>
@@ -1043,9 +1374,9 @@ export default function EULDashboard() {
         <main style={{ flex: 1, padding: 24, overflowY: "auto", maxWidth: 1200 }}>
           {renderSection()}
           <div style={{ color: COLORS.textDim, fontSize: 11, textAlign: "center", marginTop: 40, paddingBottom: 20, borderTop: `1px solid ${COLORS.border}`, paddingTop: 16 }}>
-            EUL Protocol Intelligence Dashboard â Framework by Joel @ ms2capital â Last updated: March 2026
+            EUL Protocol Intelligence Dashboard — Framework by Joel @ ms2capital — Last updated: March 2026
             <br />
-            Live data: CoinGecko + DefiLlama | Mock data indicated where applicable | Auto-refreshes every 2 minutes
+            Live data: CoinGecko + DefiLlama | Dune SQL monitors: Revenue Pipeline + Whale Activity | Auto-refreshes every 2 minutes
           </div>
         </main>
       </div>
