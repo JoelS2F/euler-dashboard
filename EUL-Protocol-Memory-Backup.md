@@ -16,13 +16,13 @@ Built a comprehensive EUL Protocol Intelligence Dashboard combining a full monit
 
 **Repo:** [github.com/JoelS2F/euler-dashboard](https://github.com/JoelS2F/euler-dashboard)
 **Visibility:** Public
-**Commits:** 6 on main branch
+**Commits:** 7 on main branch
 
 ### Files in Repo
 
 | File | Size | Description |
 |------|------|-------------|
-| `eul-dashboard.jsx` | ~85KB / 1,397 lines | Interactive React dashboard with live APIs + 2 Dune SQL monitors |
+| `eul-dashboard.jsx` | ~78KB / 1,397 lines | Interactive React dashboard with live APIs + 2 Dune SQL monitors |
 | `EUL-Protocol-Intelligence-Dashboard.md` | Full framework | 8-section intelligence monitoring framework with metrics, alerts, thesis scorecard |
 | `EUL-Protocol-Memory-Backup.md` | ~12KB | Complete project memory backup (this file) |
 | `README.md` | 2.6KB | Repo documentation with sections overview, data sources, quick start |
