@@ -1,0 +1,5 @@
+import React from 'react';
+import ReactDOM from 'react-dom/client';
+import EULDashboard from './eul-dashboard.jsx';
+
+ReactDOM.createRoot(document.getElementById('root')).render(<EULDashboard />);
